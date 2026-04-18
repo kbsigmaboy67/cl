@@ -38,7 +38,7 @@ export default {
         return new Response("Invalid_URL.error", { status: 400 });
       }
 
-      const ALLOWED = ["httpbin.org", "example.com"];
+      const ALLOWED = ["httpbin.org", "example.com", "raw.githubusercontent.com", "kbsigmaboy67.github.io"];
 
       if (!ALLOWED.includes(target.hostname)) {
         return new Response("forbidden.error", { status: 403 });
