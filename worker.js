@@ -1,88 +1,105 @@
 export default {
-  async fetch(request, env) {
+  async fetch(request) {
+    const url = new URL(request.url);
+
+    const encodedTarget = url.searchParams.get("u");
+
+    if (!encodedTarget) {
+      return new Response("Missing target (?u=)", { status: 400 });
+    }
+
+    let targetUrl;
+
     try {
-      const url = new URL(request.url);
-      const param = url.searchParams.get("m");
+      targetUrl = new URL(atob(encodedTarget));
+    } catch {
+      return new Response("Invalid encoded URL", { status: 400 });
+    }
 
-      if (!param) {
-        return new Response("Missing_param", { status: 400 });
-      }
+    // Fetch upstream
+    const upstreamResponse = await fetch(targetUrl.toString(), {
+      method: request.method,
+      headers: filterHeaders(request.headers),
+      body: request.body,
+      redirect: "follow"
+    });
 
-      const parts = param.split(".");
-      if (parts.length !== 2) {
-        return new Response("Bad_format", { status: 400 });
-      }
+    const contentType = upstreamResponse.headers.get("content-type") || "";
 
-      const [encoded, sig] = parts;
+    // Clone headers so we can modify safely
+    const headers = new Headers(upstreamResponse.headers);
 
-      if (!env.SECRET_KEY) {
-        return new Response("Server_misconfigured (no_secret)", { status: 500 });
-      }
+    // Remove security policies that break proxies
+    headers.delete("content-security-policy");
+    headers.delete("content-security-policy-report-only");
+    headers.delete("x-frame-options");
 
-      const valid = await verifySignature(encoded, sig, env.SECRET_KEY);
-      if (!valid) {
-        return new Response("Invalid_signature.error", { status: 403 });
-      }
+    // If HTML → rewrite
+    if (contentType.includes("text/html")) {
+      let html = await upstreamResponse.text();
 
-      let decoded;
-      try {
-        decoded = atob(encoded);
-      } catch {
-        return new Response("Bad_base64.error", { status: 400 });
-      }
+      const base = targetUrl.origin;
 
-      let target;
-      try {
-        target = new URL(decoded);
-      } catch {
-        return new Response("Invalid_URL.error", { status: 400 });
-      }
+      html = rewriteHtml(html, base);
 
-      const ALLOWED = ["httpbin.org", "example.com", "raw.githubusercontent.com", "kbsigmaboy67.github.io"];
+      headers.set("content-type", "text/html; charset=utf-8");
 
-      if (!ALLOWED.includes(target.hostname)) {
-        return new Response("forbidden.error", { status: 403 });
-      }
-
-      const res = await fetch(target.toString(), {
-        method: request.method,
-        headers: request.headers,
-        body: request.body
-      });
-
-      return new Response(res.body, {
-        status: res.status,
-        headers: {
-          "Access-Control-Allow-Origin": "*"
-        }
-      });
-
-    } catch (err) {
-      return new Response("Worker_error: " + err.message, {
-        status: 500
+      return new Response(html, {
+        status: upstreamResponse.status,
+        headers
       });
     }
+
+    // Non-HTML (JS, CSS, images, etc.)
+    return new Response(upstreamResponse.body, {
+      status: upstreamResponse.status,
+      headers
+    });
   }
 };
 
-async function verifySignature(data, signature, secret) {
-  const key = await crypto.subtle.importKey(
-    "raw",
-    new TextEncoder().encode(secret),
-    { name: "HMAC", hash: "SHA-256" },
-    false,
-    ["sign"]
-  );
+/**
+ * Rewrites HTML so ALL navigation stays inside proxy
+ */
+function rewriteHtml(html, base) {
+  return html
 
-  const sigBuffer = await crypto.subtle.sign(
-    "HMAC",
-    key,
-    new TextEncoder().encode(data)
-  );
+    // src="..."
+    .replace(/src="\/\//g, 'src="https://')
 
-  const expected = btoa(
-    String.fromCharCode(...new Uint8Array(sigBuffer))
-  );
+    // href="..."
+    .replace(/href="\/\//g, 'href="https://')
 
-  return expected === signature;
+    // absolute src
+    .replace(/src="https?:\/\/([^"]+)"/g, (m, p1) => {
+      return `src="?u=${btoa("https://" + p1)}"`;
+    })
+
+    // absolute href
+    .replace(/href="https?:\/\/([^"]+)"/g, (m, p1) => {
+      return `href="?u=${btoa("https://" + p1)}"`;
+    })
+
+    // forms
+    .replace(/action="https?:\/\/([^"]+)"/g, (m, p1) => {
+      return `action="?u=${btoa("https://" + p1)}"`;
+    })
+
+    // inject <base> to help relative paths
+    .replace(
+      "<head>",
+      `<head><base href="${base}/">`
+    );
+}
+
+/**
+ * Removes headers that break proxy rendering
+ */
+function filterHeaders(headers) {
+  const newHeaders = new Headers(headers);
+
+  newHeaders.delete("cookie"); // optional (privacy + avoids session leaks)
+  newHeaders.delete("referer");
+
+  return newHeaders;
 }
