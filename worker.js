@@ -14,7 +14,7 @@ export default {
       try { decoded = atob(encoded); } catch { return new Response("Bad base64", { status: 400 }); }
       let target;
       try { target = new URL(decoded); } catch { return new Response("Invalid URL", { status: 400 }); }
-      const ALLOWED = ["httpbin.org", "kbsigmaboy67.github.io"];
+      const ALLOWED = ["httpbin.org", "kbsigmaboy67.github.io", "google.com"];
       if (!ALLOWED.includes(target.hostname)) return new Response("Forbidden", { status: 403 });
 
       const reqHeaders = new Headers(request.headers);
