@@ -5,7 +5,7 @@ export default {
 
     if (!param) {
       return new Response("Missing param", { status: 400 });
-    }
+    } 
 
     const [encoded, sig] = param.split(".");
 
